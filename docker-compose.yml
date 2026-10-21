@@ -23,6 +23,46 @@ services:
       test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d ${PG_DB}"]
       interval: 5s
       retries: 10
+  airflow-init:
+    image: postgres:16
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        until pg_isready -h postgres -U "$$PG_USER" -d "$$PG_DB"; do sleep 2; done
+        exists=$$(PGPASSWORD="$$PG_PASSWORD" psql -h postgres -U "$$PG_USER" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='airflow'")
+        if [ "$$exists" != "1" ]; then
+          PGPASSWORD="$$PG_PASSWORD" psql -h postgres -U "$$PG_USER" -d postgres -c "CREATE DATABASE airflow"
+        fi
+  airflow:
+    image: apache/airflow:2.10.5
+    env_file: .env
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${PG_USER}:${PG_PASSWORD}@postgres:5432/airflow
+      _PIP_ADDITIONAL_REQUIREMENTS: "boto3 polars httpx tenacity psycopg[binary]"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./ingestion:/opt/airflow/ingestion
+    command: >
+      bash -c "
+      airflow users create --username admin --password admin --firstname Lab --lastname User --role Admin --email lab@example.com || true &&
+      airflow scheduler &
+      exec airflow webserver"
 volumes:
   miniodata: {}
   pgdata: {}
+
+
+
